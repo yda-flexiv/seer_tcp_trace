@@ -9,72 +9,70 @@
 #define ETH_P_IP 0x0800
 #endif
 
-unsigned char lookup_protocol(struct xdp_md *ctx) {
-    unsigned char protocol;
+#define NOT_A_SEER_COMMAND 0
+/**
+ * @brief Find out what type of command is this packet.
+ */
+uint16_t lookup_seer_cmd_type(struct xdp_md *ctx) {
+    uint16_t cmd_type = 0;
 
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = data;
-    if (data + sizeof(struct ethhdr) > data_end) {
-        return 0;
+    if (data + sizeof(struct ethhdr) >= data_end) {
+        goto the_end;
     }
-    // If it is an IP packet
-    if (bpf_ntohs(eth->h_proto) == ETH_P_IP) {
-        // protocol of this packet:
-        // 1 ICMP
-        // 6 TCP
-        // 17 UDP
-        struct iphdr *iph = data + sizeof(struct ethhdr);
-        if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) < data_end) {
-            protocol = iph->protocol;
-        }
-    }
-    return protocol;
-}
-
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(key_size, sizeof(u32));
-    __uint(value_size, sizeof(struct SeerTcpCommandRecord));
-} commands SEC(".maps");
-
-SEC("XDP")
-int trace19204(struct xdp_md *ctx) {
-    unsigned char protocol;
-
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = data;
-    if (data + sizeof(struct ethhdr) > data_end) {
-        return XDP_PASS;
-    }
-    // If it is an IP packet
     if (bpf_ntohs(eth->h_proto) != ETH_P_IP) {
-        return XDP_PASS;
+        goto the_end;
     }
-    // protocol of this packet:
-    // 1 ICMP
-    // 6 TCP
-    // 17 UDP
     struct iphdr *iph = data + sizeof(struct ethhdr);
-    if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) < data_end) {
-        protocol = iph->protocol;
+    if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) >= data_end) {
+        goto the_end;
     }
-    if (protocol != IPPROTO_TCP) {
-        return XDP_PASS;
+    if (iph->protocol != IPPROTO_TCP) {
+        goto the_end;
     }
-    // Get port
+    // Get port, filter by the destination port
     struct tcphdr *tcph = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
     if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) +
             sizeof(struct tcphdr) >=
         data_end) {
+        goto the_end;
+    }
+    if (tcph->dest !=
+        SEER_PORT_STATUS) { // TODO maybe check if the port starts with 192
+        goto the_end;
+    }
+    // Get TCP body, parse seer header
+    struct SeerTcpHeader *seerh = data + sizeof(struct ethhdr) +
+                                  sizeof(struct iphdr) + sizeof(struct tcphdr);
+    if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) +
+            sizeof(struct tcphdr) + sizeof(struct SeerTcpHeader) >=
+        data_end) {
+        goto the_end;
+    }
+    if (seerh->m_sync != SEER_TCP_HEADER_MAGIC_BYTE) {
+        goto the_end;
+    }
+    cmd_type = bpf_ntohs(seerh->m_type);
+
+the_end:
+    return cmd_type;
+}
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(key_size, sizeof(u16));
+    __uint(value_size, sizeof(u32));
+} commands SEC(".maps");
+
+SEC("XDP")
+int trace19204(struct xdp_md *ctx) {
+    uint16_t cmd_type = lookup_seer_cmd_type(ctx);
+    if (cmd_type == NOT_A_SEER_COMMAND) {
         return XDP_PASS;
     }
-    if (tcph->dest != SEER_PORT_STATUS) {
-        return XDP_PASS;
-    }
-    struct SeerTcpCommandRecord record = {};
-    record.cmd = 1; // TODO extract command from tcp body
+    // increment cmd type cnt
 
     return XDP_PASS;
 }
