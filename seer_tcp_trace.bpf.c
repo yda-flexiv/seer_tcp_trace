@@ -39,8 +39,9 @@ uint16_t lookup_seer_cmd_type(struct xdp_md *ctx) {
         data_end) {
         goto the_end;
     }
-    if (tcph->dest !=
-        SEER_PORT_STATUS) { // TODO maybe check if the port starts with 192
+    if (bpf_ntohs(tcph->dest) != SEER_PORT_STATUS &&
+        bpf_ntohs(tcph->source) !=
+            SEER_PORT_STATUS) { // TODO maybe check if the port starts with 192
         goto the_end;
     }
     // Get TCP body, parse seer header
@@ -66,7 +67,7 @@ struct {
     __uint(value_size, sizeof(u32));
 } commands SEC(".maps");
 
-SEC("XDP")
+SEC("xdp")
 int trace19204(struct xdp_md *ctx) {
     uint16_t cmd_type = lookup_seer_cmd_type(ctx);
     if (cmd_type == NOT_A_SEER_COMMAND) {
